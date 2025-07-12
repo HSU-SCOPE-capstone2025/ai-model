@@ -29,14 +29,17 @@ const DashboardPage = () => {
   const initialInfluencer = query.get("influencer_name") || "";
   const [selectedInfluencer, setSelectedInfluencer] = useState(initialInfluencer);
   const [selectedRow, setSelectedRow] = useState(null); // 선택된 행 인덱스 저장
-  const [chatResponse, setChatResponse] = useState(""); // 응답 텍스트용 state
+
+  const [chatSummary, setChatSummary] = useState(""); // gpt_summary 전용
+  const [chatResult, setChatResult] = useState("");   // result 전용
+  const [articleTitles, setArticleTitles] = useState([]); // 기사 제목 리스트
+
   useEffect(() => {
     fetchData();
   }, [selectedInfluencer]);
 
   const sendChatQuery = async (rowData, purpose) => {
     try {
-      // ✅ v= 뒤 해시값만 추출
       const videoId = new URL(rowData.video_url).searchParams.get("v");
 
       const query = `"${rowData.influencer_name}"의 영상(${videoId})에 대한 negative 댓글 [${purpose}] CB: ${rowData.cb_score}, EC: ${rowData.ec_score}`;
@@ -46,12 +49,77 @@ const DashboardPage = () => {
         gpt: true
       });
 
-      const resultText = response.data.gpt_summary + response.data.result;
-      setChatResponse(`[${purpose}] 완료됨:\n` + resultText);
+      // 초기화
+      setChatSummary("");
+      setChatResult("");
+      setArticleTitles([]);
+
+      if (purpose === "리포트 생성") {
+        setChatSummary(response.data.gpt_summary);
+        setChatResult(response.data.result);
+      } else if (purpose === "대처방안 생성") {
+        setChatSummary(response.data.gpt_summary);
+      } else if (purpose === "반대관점 콘텐츠 제안") {
+        // 기사 제목 파싱
+        const raw = response.data.gpt_summary || "";
+        const parsed = raw
+          .split("\n")
+          .map(line => line.replace(/^\d+\.\s*/, "").replace(/^"(.*)"$/, "$1").trim())
+          .filter(line => line); // 빈 줄 제거
+        setArticleTitles(parsed);
+      }
+
     } catch (err) {
       console.error("POST 실패:", err);
-      setChatResponse("❌ 요청 중 오류가 발생했습니다.");
+      setChatSummary("❌ 요청 중 오류가 발생했습니다.");
+      setChatResult("");
+      setArticleTitles([]);
     }
+  };
+
+
+  const parseChatResult = (chatResult) => {
+    const lines = chatResult.split("\n");
+    const results = [];
+
+    let current = {};
+    for (let line of lines) {
+      line = line.trim();
+
+      // 번호로 시작하는 댓글 내용
+      const numberMatch = line.match(/^(\d+)\.\s*(.*)/);
+      if (numberMatch) {
+        current = {
+          number: numberMatch[1],
+          content: numberMatch[2].replace(/<[^>]+>/g, "").trim(), // <b> 태그 제거
+        };
+      }
+
+      // ▶ 감정: ... 줄
+      if (line.startsWith("▶ 감정:")) {
+        const match = line.match(
+          /^▶ 감정:\s*(.*?)\s*\/\s*주제:\s*(.*?)\s*\/\s*클러스터:\s*(.*?)\s*\/\s*점수:\s*([-+]?\d+)\s*\/\s*SCOPE_score:\s*([\d.]+)/
+        );
+        if (match) {
+          current.emotion = match[1].trim();
+          current.topic = match[2].trim();
+          current.cluster = match[3].trim();
+          current.score = match[4];
+          current.scope = match[5];
+          results.push(current);
+          current = {};
+        }
+      }
+    }
+
+    return results;
+  };
+
+  const linkifyText = (text) => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    return text.replace(urlRegex, (url) => {
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+    });
   };
 
 
@@ -256,7 +324,7 @@ const DashboardPage = () => {
       >
         🔁 반대관점 콘텐츠 제안
       </button>
-      {chatResponse && (
+      {chatSummary && (
         <div
           style={{
             marginTop: "1.5rem",
@@ -266,10 +334,80 @@ const DashboardPage = () => {
             borderRadius: "8px",
             border: "1px solid #ccc"
           }}
+          dangerouslySetInnerHTML={{ __html: linkifyText(chatSummary) }}
+        />
+      )}
+      {articleTitles.length > 0 && (
+        <div
+          style={{
+            marginTop: "1.5rem",
+            backgroundColor: "#f4f4f4",
+            padding: "1rem",
+            borderRadius: "8px",
+            border: "1px solid #ccc"
+          }}
         >
-          {chatResponse}
+          <p style={{ marginBottom: "0.5rem" }}>
+            선택하신 영상과는 반대되는 시각을 담고 있는 콘텐츠를 추천해드릴게요. 다양한 관점을 참고해보세요!
+          </p>
+          <p style={{ marginBottom: "0.8rem", fontWeight: "bold" }}>🔎 추천 기사 제목</p>
+          <ul style={{ paddingLeft: "1.2rem", margin: 0 }}>
+            {articleTitles.map((title, idx) => (
+              <li key={idx} style={{ marginBottom: "0.4rem" }}>
+                <a
+                  href={`https://www.google.com/search?q=${encodeURIComponent(title)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ textDecoration: "none", color: "#2c3e50" }}
+                >
+                  {title}
+                </a>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
+
+
+      {chatResult && (
+        <div style={{ 
+          marginTop: "1.5rem",
+          backgroundColor: "#f4f4f4",
+          padding: "1rem",
+          borderRadius: "8px",
+          border: "1px solid #ccc"
+        }}>
+          <h4>📊 필터링된 댓글 분석 결과</h4>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+            <thead>
+              <tr style={{ backgroundColor: "#e0e0e0" }}>
+                <th style={{ padding: "8px", border: "1px solid #ccc" }}>번호</th>
+                <th style={{ padding: "8px", border: "1px solid #ccc" }}>댓글 내용</th>
+                <th style={{ padding: "8px", border: "1px solid #ccc" }}>감정</th>
+                <th style={{ padding: "8px", border: "1px solid #ccc" }}>주제</th>
+                <th style={{ padding: "8px", border: "1px solid #ccc" }}>클러스터</th>
+                <th style={{ padding: "8px", border: "1px solid #ccc" }}>점수</th>
+                <th style={{ padding: "8px", border: "1px solid #ccc" }}>SCOPE 점수</th>
+              </tr>
+            </thead>
+            <tbody>
+              {parseChatResult(chatResult).map((item, idx) => (
+                <tr key={idx}>
+                  <td style={{ padding: "8px", border: "1px solid #ccc", textAlign: "center" }}>{item.number}</td>
+                  <td style={{ padding: "8px", border: "1px solid #ccc" }}>{item.content}</td>
+                  <td style={{ padding: "8px", border: "1px solid #ccc", textAlign: "center" }}>{item.emotion}</td>
+                  <td style={{ padding: "8px", border: "1px solid #ccc" }}>{item.topic}</td>
+                  <td style={{ padding: "8px", border: "1px solid #ccc", textAlign: "center" }}>{item.cluster}</td>
+                  <td style={{ padding: "8px", border: "1px solid #ccc", textAlign: "center" }}>{item.score}</td>
+                  <td style={{ padding: "8px", border: "1px solid #ccc", textAlign: "center" }}>{item.scope}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+
     </div>
   );
 };
